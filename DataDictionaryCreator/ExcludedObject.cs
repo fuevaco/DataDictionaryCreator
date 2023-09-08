@@ -1,7 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
+﻿using System.Collections.Generic;
 using System.Xml.Serialization;
 using Microsoft.SqlServer.Management.Smo;
 
@@ -15,23 +12,25 @@ namespace DataDictionaryCreator
     [XmlRoot("ExcludedObject")]
     public class ExcludedObject
     {
-        public ExcludedObject() { }
-        public ExcludedObject(Table table) 
-        { 
+        public ExcludedObject()
+        {
+        }
+
+        public ExcludedObject(Table table)
+        {
             Server = table.Parent.Parent.Name;
             Database = table.Parent.Name;
             Type = DatabaseObjectTypes.Table.ToString();
             Name = table.ToString();
         }
 
-        [XmlAttribute("Server")]
-        public string Server { get; set; }
-        [XmlAttribute("Database")]
-        public string Database { get; set; }
-        [XmlAttribute("Type")]
-        public string Type { get; set; }
-        [XmlAttribute("Name")]
-        public string Name { get; set; }
+        [XmlAttribute("Server")] public string Server { get; set; }
+
+        [XmlAttribute("Database")] public string Database { get; set; }
+
+        [XmlAttribute("Type")] public string Type { get; set; }
+
+        [XmlAttribute("Name")] public string Name { get; set; }
 
 
         public static bool operator ==(ExcludedObject obj1, ExcludedObject obj2)

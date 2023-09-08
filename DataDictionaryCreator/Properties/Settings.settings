@@ -12,7 +12,7 @@
       <Value Profile="(Default)">True</Value>
     </Setting>
     <Setting Name="SQL_CONNECTION_STRING" GenerateDefaultValueInCode="false" Type="System.String" Scope="User">
-      <Value Profile="(Default)">Integrated Security=SSPI;Persist Security Info=True;Initial Catalog=Northwind;Data Source=(local)</Value>
+      <Value Profile="(Default)">server=192.168.1.109;user id=sa;password= lcadmin!2019;initial catalog=uof</Value>
     </Setting>
     <Setting Name="ADDITIONAL_PROPERTIES" GenerateDefaultValueInCode="false" Type="System.String" Scope="User">
       <Value Profile="(Default)" />

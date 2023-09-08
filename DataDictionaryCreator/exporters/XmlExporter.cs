@@ -1,24 +1,22 @@
 using System;
 using System.IO;
-using System.Reflection;
 using System.Text;
 using System.Windows.Forms;
-using Microsoft.SqlServer.Management.Smo;
 using System.Xml;
-using System.Xml.Xsl;
-using System.Xml.XPath;
+using Microsoft.SqlServer.Management.Smo;
 
 namespace DataDictionaryCreator
 {
 	/// <summary>
-	/// Description of XmlExporter.
+	///     Description of XmlExporter.
 	/// </summary>
 	public class XmlExporter : Exporter
-	{
-        new public static string Identifier = "DataDictionaryCreator";
-		private XmlTextWriter writer = null;
-		protected override void BeginExport(Database database, string[] additionalProperties)
-		{
+    {
+        public new static string Identifier = "DataDictionaryCreator";
+        private XmlTextWriter writer;
+
+        protected override void BeginExport(Database database, string[] additionalProperties)
+        {
             writer.WriteStartDocument();
             writer.WriteDocType("DataDictionaryCreator", null, null, null);
             writer.WriteComment("Contains data dictionary information exported from Data Dictionary Creator");
@@ -31,27 +29,27 @@ namespace DataDictionaryCreator
             writer.WriteAttributeString("additionalPropertyCount", additionalProperties.Length.ToString());
             writer.WriteStartElement("tables");
         }
-		
-		protected override void EndColumn()
-		{
+
+        protected override void EndColumn()
+        {
             writer.WriteEndElement(); //column
-		}
-		
-		protected override void EndExport()
-		{
+        }
+
+        protected override void EndExport()
+        {
             writer.WriteEndElement(); //tables
             writer.WriteEndElement(); //documentation
             writer.WriteEndDocument();
             writer.Flush();
-		}
-		
-		protected override void EndTable()
-		{
+        }
+
+        protected override void EndTable()
+        {
             writer.WriteEndElement(); //column
-		}
-		
-		protected override void ExportColumnExtendedProperty(Table table, Column column, string property)
-		{
+        }
+
+        protected override void ExportColumnExtendedProperty(Table table, Column column, string property)
+        {
             writer.WriteStartElement("property");
             writer.WriteAttributeString("name", property);
             if (column.ExtendedProperties.Contains(property))
@@ -59,26 +57,26 @@ namespace DataDictionaryCreator
             else
                 writer.WriteAttributeString("value", string.Empty);
             writer.WriteEndElement(); //property
-		}
+        }
 
-		protected override void ExportColumnProperties(Table table, Column column)
-		{
-			writer.WriteStartElement("column");
+        protected override void ExportColumnProperties(Table table, Column column)
+        {
+            writer.WriteStartElement("column");
             writer.WriteAttributeString("number", column.ID.ToString());
             writer.WriteAttributeString("name", column.Name);
-			writer.WriteAttributeString("datatype", SmoUtil.GetDatatypeString(column));
+            writer.WriteAttributeString("datatype", SmoUtil.GetDatatypeString(column));
             writer.WriteAttributeString("size", column.DataType.MaximumLength.ToString());
-            writer.WriteAttributeString("nullable", column.Nullable == true ? "Y" : "N");
-            writer.WriteAttributeString("inprimarykey", column.InPrimaryKey == true ? "Y" : "N");
-            writer.WriteAttributeString("isforeignkey", column.IsForeignKey == true ? "Y" : "N");
-			if (column.ExtendedProperties.Contains(SmoUtil.DESCRIPTION_PROPERTY))
-			    writer.WriteAttributeString("description", column.ExtendedProperties[SmoUtil.DESCRIPTION_PROPERTY].Value.ToString());
-			else
-			    writer.WriteAttributeString("description", string.Empty);
-		}
-		
-		protected override void ExportTableExtendedProperty(Table table, string property)
-		{
+            writer.WriteAttributeString("nullable", column.Nullable ? "Y" : "N");
+            writer.WriteAttributeString("inprimarykey", column.InPrimaryKey ? "Y" : "N");
+            writer.WriteAttributeString("isforeignkey", column.IsForeignKey ? "Y" : "N");
+            if (column.ExtendedProperties.Contains(SmoUtil.DESCRIPTION_PROPERTY))
+                writer.WriteAttributeString("description", column.ExtendedProperties[SmoUtil.DESCRIPTION_PROPERTY].Value.ToString());
+            else
+                writer.WriteAttributeString("description", string.Empty);
+        }
+
+        protected override void ExportTableExtendedProperty(Table table, string property)
+        {
             if (property != SmoUtil.DESCRIPTION_PROPERTY)
             {
                 writer.WriteStartElement("property");
@@ -87,9 +85,9 @@ namespace DataDictionaryCreator
                 writer.WriteEndElement(); //property
             }
         }
-		
-		protected override void ExportTableProperties(Table table)
-		{
+
+        protected override void ExportTableProperties(Table table)
+        {
             writer.WriteStartElement("table");
             writer.WriteAttributeString("name", table.Name);
             writer.WriteAttributeString("schema", table.Schema);
@@ -98,11 +96,11 @@ namespace DataDictionaryCreator
             else
                 writer.WriteAttributeString("description", string.Empty);
         }
-		
-		protected override void Initialize(Stream stream)
-		{
-			writer = new XmlTextWriter(stream, Encoding.UTF8);
+
+        protected override void Initialize(Stream stream)
+        {
+            writer = new XmlTextWriter(stream, Encoding.UTF8);
             writer.Formatting = Formatting.Indented;
-		}
-	}
+        }
+    }
 }

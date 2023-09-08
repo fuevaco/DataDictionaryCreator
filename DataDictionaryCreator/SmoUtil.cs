@@ -8,25 +8,26 @@
  */
 
 using System;
-using Microsoft.SqlServer.Management.Smo;
 using DataDictionaryCreator.Properties;
+using Microsoft.SqlServer.Management.Smo;
 
 namespace DataDictionaryCreator
 {
-	/// <summary>
-	/// Description of SmoUtil.
-	/// </summary>
-	public class SmoUtil
-	{
+    /// <summary>
+    ///     Description of SmoUtil.
+    /// </summary>
+    public class SmoUtil
+    {
         public static readonly string DESCRIPTION_PROPERTY = "MS_Description";
-		private SmoUtil()
-		{
-		}
-		
+
+        private SmoUtil()
+        {
+        }
+
         public static string GetDatatypeString(Column column)
         {
-            DataType dataType = column.DataType;
-            switch(dataType.SqlDataType)
+            var dataType = column.DataType;
+            switch (dataType.SqlDataType)
             {
                 case SqlDataType.Decimal:
                     return string.Format("{0} ({1},{2})", dataType.SqlDataType.ToString(), dataType.NumericPrecision, dataType.NumericScale);
@@ -36,16 +37,16 @@ namespace DataDictionaryCreator
                 case SqlDataType.NChar:
                     return string.Format("{0} ({1})", dataType.SqlDataType.ToString(), dataType.MaximumLength);
                 default:
-                return column.DataType.SqlDataType.ToString();
+                    return column.DataType.SqlDataType.ToString();
             }
         }
 
         /// <summary>
-        /// Because the ToolStripComboBox doesn't allow a value field and a display field
-        /// we'll need to iterate through the collection to look for the table.
-        /// Eventually we'll need to change the control to a regular ComboBox so we can 
-        /// use the table [ID] field for the value.        
-        /// </summary>        
+        ///     Because the ToolStripComboBox doesn't allow a value field and a display field
+        ///     we'll need to iterate through the collection to look for the table.
+        ///     Eventually we'll need to change the control to a regular ComboBox so we can
+        ///     use the table [ID] field for the value.
+        /// </summary>
         /// <param name="db">SMO database object.</param>
         /// <param name="tableName">Name of the table to match. e.g. [dbo].[tablename]</param>
         /// <returns></returns>
@@ -61,5 +62,5 @@ namespace DataDictionaryCreator
 
             throw new Exception(string.Format(Resources.MissingTableException, tableName));
         }
-	}
+    }
 }

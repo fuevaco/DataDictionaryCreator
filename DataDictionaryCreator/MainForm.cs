@@ -2,142 +2,27 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
-using System.Drawing;
-using System.Text;
-using System.Windows.Forms;
-using Microsoft.SqlServer.Management.Smo;
-using Microsoft.SqlServer.Management.Common;
-using System.Data.SqlClient;
-using System.IO;
-using System.Xml;
-using System.Xml.Xsl;
-using System.Xml.XPath;
-using System.Collections;
-using DataDictionaryCreator.Properties;
 using System.Deployment.Application;
+using System.Diagnostics;
+using System.Drawing;
+using System.IO;
+using System.Reflection;
+using System.Windows.Forms;
+using System.Xml;
+using ADODB;
+using DataDictionaryCreator.Properties;
+using Microsoft.Data.SqlClient;
+using Microsoft.SqlServer.Management.Common;
+using Microsoft.SqlServer.Management.Smo;
+using MSDASC;
+using Settings = DataDictionaryCreator.Properties.Settings;
+using SqlException = System.Data.SqlClient.SqlException;
+using View = Microsoft.SqlServer.Management.Smo.View;
 
 namespace DataDictionaryCreator
 {
     public partial class Main : Form
     {
-        #region - Internal properties -
-
-        private string sqlConnectionString
-        {
-            get { return Properties.Settings.Default.SQL_CONNECTION_STRING; }
-            set
-            {
-                Properties.Settings.Default.SQL_CONNECTION_STRING = value;
-                Properties.Settings.Default.Save();
-
-                //TODO: Review this code.  Why can't the connectionstring == value? Does it make a difference to setup again?
-                if (connection != null) //&& connection.ConnectionString != value)
-                {
-                    DocumentationSetup(value);
-                    btnConnect.Visible = false;
-                }
-            }
-        }
-
-        private string additionalProperties
-        {
-            get { return Properties.Settings.Default.ADDITIONAL_PROPERTIES; }
-            set
-            {
-                Properties.Settings.Default.ADDITIONAL_PROPERTIES = value.TrimEnd(',');
-                Properties.Settings.Default.Save();
-                FillSelectedTableToDocument();
-            }
-        }
-
-        private string foreignKeyDescription
-        {
-            get { return Properties.Settings.Default.FOREIGN_KEY_DESCRIPTION; }
-            set
-            {
-                Properties.Settings.Default.FOREIGN_KEY_DESCRIPTION = value;
-                Properties.Settings.Default.Save();
-            }
-        }
-
-        private string primaryKeyDescription
-        {
-            get { return Properties.Settings.Default.PRIMARY_KEY_DESCRIPTION; }
-            set
-            {
-                Properties.Settings.Default.PRIMARY_KEY_DESCRIPTION = value;
-                Properties.Settings.Default.Save();
-            }
-        }
-
-        private string[] additionalPropertiesArray
-        {
-            get
-            {
-                if (additionalProperties.Length == 0)
-                {
-                    return new string[0];
-                }
-                else
-                {
-                    string[] items = additionalProperties.Split(',');
-
-                    List<string> reservedProperties = new List<string>();
-                    reservedProperties.Add("Column");
-                    reservedProperties.Add("Datatype");
-                    reservedProperties.Add("Description");
-                    reservedProperties.Add("Number");
-                    reservedProperties.Add("Size");
-                    reservedProperties.Add("Nullable");
-                    reservedProperties.Add("InPrimaryKey");
-                    reservedProperties.Add("IsForeignKey");
-
-                    List<string> noDups = new List<string>();
-
-                    for (int i = 0; i < items.Length; i++)
-                    {
-                        //Not Empty AND Not already in the list AND Not reserved
-                        if (items[i].Trim().Length > 0
-                            && !noDups.Exists(obj => string.Compare(obj, items[i].Trim(), true) == 0)
-                            && !reservedProperties.Exists(obj => string.Compare(obj, items[i].Trim(), true) == 0)
-                            )
-                        {
-                            noDups.Add(items[i].Trim());
-                        }
-                    }
-
-                    return noDups.ToArray();
-                }
-            }
-        }
-
-        private bool allowOverwrite
-        {
-            get { return Properties.Settings.Default.ALLOW_OVERWRITE; }
-            set
-            {
-                Properties.Settings.Default.ALLOW_OVERWRITE = value;
-                Properties.Settings.Default.Save();
-            }
-        }
-
-        private string connectionStatusDetails = string.Empty;
-        private string connectionExceptionDetails = string.Empty;
-
-        SqlConnection connection;
-        Server server;
-        Database db;
-        Table table;
-
-        private enum tabpages
-        {
-            tabPageConnect, tabPageAdvancedSettings, tabPageDocumentDatabase, tabPageImportDocumentation,
-            tabPageExportDocumentation
-                , tabPageTables, tabPageViews
-        }
-
-        #endregion
-
         #region - Public -
 
         public Main()
@@ -151,11 +36,353 @@ namespace DataDictionaryCreator
 
         #endregion
 
+        #region - Export Tab Events --
+
+        private void btnExport_Click(object sender, EventArgs e)
+        {
+            saveFileDialogExport.FileName = db.Name;
+            saveFileDialogExport.Filter = "Excel (*.xls)|*.xls" +
+                                          "|Excel Grouped (*.xls)|*.xls" +
+                                          "|HTML (*.htm)|*.htm" +
+                                          "|HTML Grouped (.htm)|.htm" +
+                                          "|Word (*.doc)|*.doc" +
+                                          "|Word Grouped (*.doc)|*.doc" +
+                                          "|XML (*.xml)|*.xml" +
+                                          "|T-SQL (*.sql)|*.sql";
+            saveFileDialogExport.ShowDialog();
+            if (!string.IsNullOrEmpty(saveFileDialogExport.FileName))
+            {
+                try
+                {
+                    var fileInfo = new FileInfo(saveFileDialogExport.FileName);
+                    //Allow a little extra space on the progress bar for the XSL transform
+                    BeginAction("Exporting to " + fileInfo.Name, (int)(db.Tables.Count * 1.1));
+                    Refresh();
+                    Exporter exporter;
+
+                    switch (fileInfo.Extension)
+                    {
+                        case ".sql":
+                            exporter = Exporter.SqlScriptExporter(server.Information);
+                            break;
+                        case ".doc":
+                            if (saveFileDialogExport.FilterIndex == 6)
+                            {
+                                exporter = Exporter.WordExporter(true);
+                            }
+                            else
+                            {
+                                exporter = Exporter.WordExporter(false);
+                            }
+
+                            break;
+                        case ".xls":
+                            if (saveFileDialogExport.FilterIndex == 2)
+                            {
+                                exporter = Exporter.ExcelExporter(true);
+                            }
+                            else
+                            {
+                                exporter = Exporter.ExcelExporter(false);
+                            }
+
+                            break;
+                        case ".htm":
+                        case ".html":
+                            if (saveFileDialogExport.FilterIndex == 4)
+                            {
+                                exporter = Exporter.HtmlExporter(true);
+                            }
+                            else
+                            {
+                                exporter = Exporter.HtmlExporter(false);
+                            }
+
+                            break;
+                        case ".xml":
+                            exporter = Exporter.XmlExporter();
+                            break;
+                        case "":
+                            return;
+                        default:
+                            //Could move this check before exporting to XML.
+                            MessageBox.Show(
+                                "Export isn't supported for this filetype: " + fileInfo.Extension,
+                                "Unsupported File Type",
+                                MessageBoxButtons.OK,
+                                MessageBoxIcon.Information);
+                            return;
+                    }
+
+                    exporter.Progressed += ProgressUpdate;
+                    exporter.Export(db, additionalPropertiesArray, fileInfo);
+
+                    try
+                    {
+                        if (chkOpenFile.Checked)
+                            Process.Start(fileInfo.FullName);
+                    }
+                    catch (Exception)
+                    {
+                        MessageBox.Show(Resources.ExportErrorGeneric);
+                    }
+                }
+                finally
+                {
+                    EndAction(Resources.ExportEndAction);
+                }
+            }
+        }
+
+        #endregion
+
+        #region - Import Tab Events -
+
+        private void btnImport_Click(object sender, EventArgs e)
+        {
+            openFileDialogImport.ShowDialog();
+            if (!string.IsNullOrEmpty(openFileDialogImport.FileName))
+            {
+                try
+                {
+                    var fileInfo = new FileInfo(openFileDialogImport.FileName);
+                    //Allow a little extra space on the progress bar for the XSL transform
+                    BeginAction("Importing from " + fileInfo.Name, (int)(db.Tables.Count * 1.1));
+                    Refresh();
+
+                    switch (fileInfo.Extension)
+                    {
+                        case ".sql":
+                            //Check script contains correct DDC tag
+                            var script = fileInfo.OpenText().ReadToEnd();
+                            if (script.IndexOf(Exporter.Identifier, StringComparison.InvariantCultureIgnoreCase) == -1)
+                                throw new Exception(Resources.ImportErrorCanNotValidateScript);
+
+                            //Execute SQL script - this command knows how to deal with GO separators
+                            server.ConnectionContext.ExecuteNonQuery(script);
+                            break;
+                        case ".xml":
+                            //Check doctype and tags to ensure DDC type
+                            var xmlDoc = new XmlDocument();
+                            xmlDoc.Load(fileInfo.FullName);
+                            if (!xmlDoc.DocumentType.Name.Equals(XmlExporter.Identifier, StringComparison.InvariantCultureIgnoreCase))
+                                throw new Exception(Resources.ImportErrorUnsupportedVersion);
+
+                            //Iterate and import
+                            foreach (XmlNode tableNode in xmlDoc.SelectNodes("//documentation/tables/table"))
+                            {
+                                var tbl = "[" + tableNode.Attributes["schema"].Value + "].[" + tableNode.Attributes["name"].Value + "]";
+                                var currentTable = SmoUtil.GetTableByName(db, tbl);
+                                SetTableDescription(currentTable, tableNode.Attributes["description"].Value);
+                                foreach (XmlNode columnNode in tableNode.SelectNodes("column"))
+                                {
+                                    SetPropertyValue(currentTable, SmoUtil.DESCRIPTION_PROPERTY, columnNode.Attributes["description"].Value, columnNode.Attributes["name"].Value, true);
+                                    foreach (XmlNode columnPropertyNode in columnNode.SelectNodes("property"))
+                                    {
+                                        SetPropertyValue(currentTable, columnPropertyNode.Attributes["name"].Value, columnPropertyNode.Attributes["value"].Value,
+                                            columnNode.Attributes["name"].Value, true);
+                                    }
+                                }
+                            }
+
+                            break;
+                    }
+
+                    DocumentationSetup(sqlConnectionString);
+                    EndAction(Resources.ImportEndAction);
+                }
+                catch (Exception ex)
+                {
+                    EndAction("ERROR: " + ex.Message);
+                }
+            }
+        }
+
+        #endregion
+
+        #region - Status Bar Events -
+
+        private void lnkException_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
+        {
+            MessageBox.Show(connectionExceptionDetails);
+        }
+
+        #endregion
+
+        #region - Views Documentation -
+
+        private void SetupViewDocumentation()
+        {
+            ddlViews.Items.Clear();
+            //dgvColumns.DataSource = null;
+
+            // Display all non-sysobject tables to be documented
+            foreach (View view in db.Views)
+            {
+                if (!view.IsSystemObject)
+                {
+                    ddlViews.Items.Add(view.ToString());
+                }
+            }
+
+            // Ultimately, display the selected table fields in the grid
+            if (ddlViews.Items.Count > 0)
+            {
+                if (ddlViews.SelectedIndex == 0)
+                {
+                    ; //FillSelectedTableToDocument();
+                }
+                else
+                {
+                    ddlViews.SelectedIndex = 0;
+                }
+            }
+        }
+
+        #endregion
+
+        #region Updater
+
+        private bool UpdateAvailable()
+        {
+            if (ApplicationDeployment.IsNetworkDeployed)
+            {
+                var updateCheck = ApplicationDeployment.CurrentDeployment;
+                var info = updateCheck.CheckForDetailedUpdate();
+
+                return info.UpdateAvailable;
+            }
+
+            return false;
+        }
+
+        #endregion
+
+        #region - Internal properties -
+
+        private string sqlConnectionString
+        {
+            get => Settings.Default.SQL_CONNECTION_STRING;
+            set
+            {
+                Settings.Default.SQL_CONNECTION_STRING = value;
+                Settings.Default.Save();
+
+                //TODO: Review this code.  Why can't the connectionstring == value? Does it make a difference to setup again?
+                if (connection != null) //&& connection.ConnectionString != value)
+                {
+                    DocumentationSetup(value);
+                    btnConnect.Visible = false;
+                }
+            }
+        }
+
+        private string additionalProperties
+        {
+            get => Settings.Default.ADDITIONAL_PROPERTIES;
+            set
+            {
+                Settings.Default.ADDITIONAL_PROPERTIES = value.TrimEnd(',');
+                Settings.Default.Save();
+                FillSelectedTableToDocument();
+            }
+        }
+
+        private string foreignKeyDescription
+        {
+            get => Settings.Default.FOREIGN_KEY_DESCRIPTION;
+            set
+            {
+                Settings.Default.FOREIGN_KEY_DESCRIPTION = value;
+                Settings.Default.Save();
+            }
+        }
+
+        private string primaryKeyDescription
+        {
+            get => Settings.Default.PRIMARY_KEY_DESCRIPTION;
+            set
+            {
+                Settings.Default.PRIMARY_KEY_DESCRIPTION = value;
+                Settings.Default.Save();
+            }
+        }
+
+        private string[] additionalPropertiesArray
+        {
+            get
+            {
+                if (additionalProperties.Length == 0)
+                {
+                    return new string[0];
+                }
+
+                var items = additionalProperties.Split(',');
+
+                var reservedProperties = new List<string>();
+                reservedProperties.Add("Column");
+                reservedProperties.Add("Datatype");
+                reservedProperties.Add("Description");
+                reservedProperties.Add("Number");
+                reservedProperties.Add("Size");
+                reservedProperties.Add("Nullable");
+                reservedProperties.Add("InPrimaryKey");
+                reservedProperties.Add("IsForeignKey");
+
+                var noDups = new List<string>();
+
+                for (var i = 0; i < items.Length; i++)
+                {
+                    //Not Empty AND Not already in the list AND Not reserved
+                    if (items[i].Trim().Length > 0
+                        && !noDups.Exists(obj => string.Compare(obj, items[i].Trim(), true) == 0)
+                        && !reservedProperties.Exists(obj => string.Compare(obj, items[i].Trim(), true) == 0)
+                       )
+                    {
+                        noDups.Add(items[i].Trim());
+                    }
+                }
+
+                return noDups.ToArray();
+            }
+        }
+
+        private bool allowOverwrite
+        {
+            get => Settings.Default.ALLOW_OVERWRITE;
+            set
+            {
+                Settings.Default.ALLOW_OVERWRITE = value;
+                Settings.Default.Save();
+            }
+        }
+
+        private string connectionStatusDetails = string.Empty;
+        private string connectionExceptionDetails = string.Empty;
+
+        private SqlConnection connection;
+        private Server server;
+        private Database db;
+        private Table table;
+
+        private enum tabpages
+        {
+            tabPageConnect,
+            tabPageAdvancedSettings,
+            tabPageDocumentDatabase,
+            tabPageImportDocumentation,
+            tabPageExportDocumentation,
+            tabPageTables,
+            tabPageViews
+        }
+
+        #endregion
+
         #region - Private -
 
         /// <summary>
-        /// Application Launch Point
-        /// </summary>        
+        ///     Application Launch Point
+        /// </summary>
         private void MainForm_Load(object sender, EventArgs e)
         {
             //Hide the "Update Available!" menu item until we can verify
@@ -171,7 +398,7 @@ namespace DataDictionaryCreator
         }
 
         /// <summary>
-        /// Set form field values based on established user settings
+        ///     Set form field values based on established user settings
         /// </summary>
         private void ApplicationSetup()
         {
@@ -179,11 +406,11 @@ namespace DataDictionaryCreator
             txtForeignKeyDescription.Text = foreignKeyDescription;
             chkOverwriteDescriptions.Checked = allowOverwrite;
             txtAdditionalProperties.Text = additionalProperties;
-            Properties.Settings.Default.ExcludedObjects = Properties.Settings.Default.ExcludedObjects ?? new ExcludedObjectList();
+            Settings.Default.ExcludedObjects = Settings.Default.ExcludedObjects ?? new ExcludedObjectList();
         }
 
         /// <summary>
-        /// Using the current database connection, load the tables to be documented.
+        ///     Using the current database connection, load the tables to be documented.
         /// </summary>
         /// <param name="sqlConnectionString">SQL Connection String</param>
         private void DocumentationSetup(string sqlConnectionString)
@@ -232,7 +459,7 @@ namespace DataDictionaryCreator
         }
 
         /// <summary>
-        /// Toggle control visibility and set text based on connection state
+        ///     Toggle control visibility and set text based on connection state
         /// </summary>
         /// <param name="isConnected">true if connected, otherwise false</param>
         /// <param name="statusMessage">message to be displayed on connection tab and status bar</param>
@@ -243,16 +470,16 @@ namespace DataDictionaryCreator
             // Success or failed status to user
             if (isConnected)
             {
-                connectionStatusDetails = statusMessage;  // You are connected.  Congratulations!
-                this.Text = String.Format(Resources.ApplicationTitle, " - " + server.ToString() + "." + db.ToString());
+                connectionStatusDetails = statusMessage; // You are connected.  Congratulations!
+                Text = string.Format(Resources.ApplicationTitle, " - " + server + "." + db);
             }
             else if (!string.IsNullOrEmpty(exceptionMessage))
             {
-                connectionStatusDetails = Resources.ConnectionErrorGenericDetailed;  // Not connected due to error                
+                connectionStatusDetails = Resources.ConnectionErrorGenericDetailed; // Not connected due to error                
             }
             else
             {
-                connectionStatusDetails = Resources.ConnectionNotConnected;  // You didn't even try.                
+                connectionStatusDetails = Resources.ConnectionNotConnected; // You didn't even try.                
             }
 
             // Connect tab settings
@@ -286,22 +513,22 @@ namespace DataDictionaryCreator
         }
 
         /// <summary>
-        /// If Additonal Properties aren't stored in user settings, try to determine which properties were previously used. 
-        /// TODO: Ask Jon what the heck this is all about.
+        ///     If Additonal Properties aren't stored in user settings, try to determine which properties were previously used.
+        ///     TODO: Ask Jon what the heck this is all about.
         /// </summary>
         private void QueryForAdditionalProperties()
         {
             SqlDataReader dr;
-            string previousAdditionalProperties = string.Empty;
+            var previousAdditionalProperties = string.Empty;
 
             try
             {
-                string sqlCommand = GetSql("sql.read_previous_properties.sql");
+                var sqlCommand = GetSql("sql.read_previous_properties.sql");
                 dr = server.ConnectionContext.ExecuteReader(sqlCommand);
 
                 while (dr.Read())
                 {
-                    previousAdditionalProperties += dr["name"].ToString() + ",";
+                    previousAdditionalProperties += dr["name"] + ",";
                 }
 
                 // We're going to explicitly close the reader here.      
@@ -335,7 +562,7 @@ namespace DataDictionaryCreator
             }
             catch (SqlException sqlEx)
             {
-                this.connectionStatusDetails = sqlEx.Message;
+                connectionStatusDetails = sqlEx.Message;
             }
             finally
             {
@@ -344,7 +571,7 @@ namespace DataDictionaryCreator
         }
 
         /// <summary>
-        /// Populate the select table fields to be documented
+        ///     Populate the select table fields to be documented
         /// </summary>
         private void FillSelectedTableToDocument()
         {
@@ -359,9 +586,9 @@ namespace DataDictionaryCreator
                 else
                     txtTableDescription.Text = string.Empty;
 
-                chkExcludedTable.Checked = Properties.Settings.Default.ExcludedObjects.Exists(obj => obj == new ExcludedObject(table));
+                chkExcludedTable.Checked = Settings.Default.ExcludedObjects.Exists(obj => obj == new ExcludedObject(table));
 
-                DataTable columnList = new DataTable();
+                var columnList = new DataTable();
                 columnList.Columns.Add("Number");
                 columnList.Columns.Add("Column");
                 columnList.Columns.Add("Datatype");
@@ -371,23 +598,23 @@ namespace DataDictionaryCreator
                 columnList.Columns.Add("IsForeignKey");
                 columnList.Columns.Add("Description");
 
-                foreach (string property in additionalPropertiesArray)
+                foreach (var property in additionalPropertiesArray)
                     columnList.Columns.Add(property);
 
                 foreach (Column column in table.Columns)
                 {
-                    DataRow row = columnList.NewRow();
+                    var row = columnList.NewRow();
                     row["Number"] = column.ID;
                     row["Column"] = column.Name;
                     row["Datatype"] = SmoUtil.GetDatatypeString(column);
                     row["Size"] = column.DataType.MaximumLength;
-                    row["Nullable"] = column.Nullable == true ? "Y" : "N";
-                    row["InPrimaryKey"] = column.InPrimaryKey == true ? "Y" : "N";
-                    row["IsForeignKey"] = column.IsForeignKey == true ? "Y" : "N";
+                    row["Nullable"] = column.Nullable ? "Y" : "N";
+                    row["InPrimaryKey"] = column.InPrimaryKey ? "Y" : "N";
+                    row["IsForeignKey"] = column.IsForeignKey ? "Y" : "N";
 
                     AddColumnToGrid(column, row, "Description", SmoUtil.DESCRIPTION_PROPERTY);
 
-                    foreach (string property in additionalPropertiesArray)
+                    foreach (var property in additionalPropertiesArray)
                         AddColumnToGrid(column, row, property, property);
 
                     columnList.Rows.Add(row);
@@ -405,7 +632,7 @@ namespace DataDictionaryCreator
 
             // This is Ben's silly way of trying to make the document grid look pretty:
             // Set the height of the grid to the same height as the included rows or set to a max height
-            int RequiredGridHeight = dgvColumns.Rows.GetRowsHeight(DataGridViewElementStates.None) + dgvColumns.ColumnHeadersHeight;
+            var RequiredGridHeight = dgvColumns.Rows.GetRowsHeight(DataGridViewElementStates.None) + dgvColumns.ColumnHeadersHeight;
 
             if (RequiredGridHeight > Convert.ToInt32(Resources.DocumentMaxGridHeight))
                 dgvColumns.Height = Convert.ToInt32(Resources.DocumentMaxGridHeight);
@@ -416,7 +643,7 @@ namespace DataDictionaryCreator
         }
 
         /// <summary>
-        /// Format readonly fields
+        ///     Format readonly fields
         /// </summary>
         /// <param name="column">column</param>
         private void FormatReadonlyColumn(DataGridViewColumn column)
@@ -427,7 +654,7 @@ namespace DataDictionaryCreator
         }
 
         /// <summary>
-        /// Add extended properties columns to grid
+        ///     Add extended properties columns to grid
         /// </summary>
         /// <param name="column">column</param>
         /// <param name="row">row</param>
@@ -435,7 +662,7 @@ namespace DataDictionaryCreator
         /// <param name="propertyName">extended property name</param>
         private void AddColumnToGrid(Column column, DataRow row, string gridName, string propertyName)
         {
-            ExtendedPropertyCollection extendedProperties = column.ExtendedProperties;
+            var extendedProperties = column.ExtendedProperties;
             if (extendedProperties.Contains(propertyName))
                 row[gridName] = column.ExtendedProperties[propertyName].Value;
             else
@@ -443,7 +670,7 @@ namespace DataDictionaryCreator
         }
 
         /// <summary>
-        /// Begin action manages progress bar and mousepointers
+        ///     Begin action manages progress bar and mousepointers
         /// </summary>
         /// <param name="message">status message</param>
         /// <param name="progressMax">int representing max progress value</param>
@@ -459,7 +686,7 @@ namespace DataDictionaryCreator
         }
 
         /// <summary>
-        /// End action manages progress bar and mousepointers
+        ///     End action manages progress bar and mousepointers
         /// </summary>
         /// <param name="message">final status message</param>
         private void EndAction(string message)
@@ -473,7 +700,7 @@ namespace DataDictionaryCreator
         }
 
         /// <summary>
-        /// Establish the extended property and associated value
+        ///     Establish the extended property and associated value
         /// </summary>
         /// <param name="table">table to be updated</param>
         /// <param name="databasePropertyName">extended property</param>
@@ -482,17 +709,17 @@ namespace DataDictionaryCreator
         /// <param name="overwrite">overwrite</param>
         private void SetPropertyValue(Table table, string databasePropertyName, string value, string columnName, bool overwrite)
         {
-            Column column = table.Columns[columnName];
+            var column = table.Columns[columnName];
             if (column == null)
             {
-                throw new Exception(string.Format(Resources.MissingColumnException, table.ToString(), columnName));
+                throw new Exception(string.Format(Resources.MissingColumnException, table, columnName));
             }
 
             SetPropertyValue(table, databasePropertyName, value, column, overwrite);
         }
 
         /// <summary>
-        /// Establish the extended property and associated value
+        ///     Establish the extended property and associated value
         /// </summary>
         /// <param name="table">table to be updated</param>
         /// <param name="databasePropertyName">extended property</param>
@@ -513,11 +740,12 @@ namespace DataDictionaryCreator
                     column.ExtendedProperties[databasePropertyName].Alter();
                 }
             }
+
             column.Alter();
         }
 
         /// <summary>
-        /// Increment the progress bar
+        ///     Increment the progress bar
         /// </summary>
         /// <param name="Sender"></param>
         /// <param name="e"></param>
@@ -527,7 +755,7 @@ namespace DataDictionaryCreator
         }
 
         /// <summary>
-        /// Establish a description for the currently documented table
+        ///     Establish a description for the currently documented table
         /// </summary>
         /// <param name="description"></param>
         private void SetTableDescription(string description)
@@ -556,88 +784,85 @@ namespace DataDictionaryCreator
         }
 
         /// <summary>
-        /// Displays a Connection String Builder (DataLinks) dialog.
-        /// 
-        /// Credits:
-        /// http://www.codeproject.com/cs/database/DataLinks.asp
-        /// http://www.codeproject.com/cs/database/DataLinks.asp?df=100&forumid=33457&select=1560237#xx1560237xx
-        /// 
-        /// Required COM references:
-        /// %PROGRAMFILES%\Microsoft.NET\Primary Interop Assemblies\adodb.dll
-        /// %PROGRAMFILES%\Common Files\System\Ole DB\OLEDB32.DLL
+        ///     Displays a Connection String Builder (DataLinks) dialog.
+        ///     Credits:
+        ///     http://www.codeproject.com/cs/database/DataLinks.asp
+        ///     http://www.codeproject.com/cs/database/DataLinks.asp?df=100&forumid=33457&select=1560237#xx1560237xx
+        ///     Required COM references:
+        ///     %PROGRAMFILES%\Microsoft.NET\Primary Interop Assemblies\adodb.dll
+        ///     %PROGRAMFILES%\Common Files\System\Ole DB\OLEDB32.DLL
         /// </summary>
         /// <param name="currentConnectionString">Previous database connection string</param>
         /// <returns>Selected connection string</returns>
         private string PromptForConnectionString(string currentConnectionString)
         {
-            MSDASC.DataLinks dataLinks = new MSDASC.DataLinksClass();
-            ADODB.Connection dialogConnection;
-            string generatedConnectionString = string.Empty;
+            DataLinks dataLinks = new DataLinksClass();
+            Connection dialogConnection;
+            var generatedConnectionString = string.Empty;
 
-            if (currentConnectionString == String.Empty)
+            if (currentConnectionString == string.Empty)
             {
-                dialogConnection = (ADODB.Connection)dataLinks.PromptNew();
-                generatedConnectionString = dialogConnection.ConnectionString.ToString();
+                dialogConnection = (Connection)dataLinks.PromptNew();
+                generatedConnectionString = dialogConnection.ConnectionString;
             }
             else
             {
-                dialogConnection = new ADODB.Connection();
+                dialogConnection = new Connection();
                 dialogConnection.Provider = "SQLOLEDB.1";
-                ADODB.Property persistProperty = dialogConnection.Properties["Persist Security Info"];
+                var persistProperty = dialogConnection.Properties["Persist Security Info"];
                 persistProperty.Value = true;
 
                 dialogConnection.ConnectionString = currentConnectionString;
-                dataLinks = new MSDASC.DataLinks();
+                dataLinks = new DataLinks();
 
                 object objConn = dialogConnection;
 
                 if (dataLinks.PromptEdit(ref objConn))
                 {
-                    generatedConnectionString = dialogConnection.ConnectionString.ToString();
+                    generatedConnectionString = dialogConnection.ConnectionString;
                 }
             }
 
             generatedConnectionString = generatedConnectionString.Replace("Provider=SQLOLEDB.1;", string.Empty);
 
             if
-            (
-                !generatedConnectionString.Contains("Integrated Security=SSPI")
-                && !generatedConnectionString.Contains("Trusted_Connection=True")
-                && !generatedConnectionString.Contains("Password=")
-                && !generatedConnectionString.Contains("Pwd=")
-            )
+                (
+                    !generatedConnectionString.Contains("Integrated Security=SSPI")
+                    && !generatedConnectionString.Contains("Trusted_Connection=True")
+                    && !generatedConnectionString.Contains("Password=")
+                    && !generatedConnectionString.Contains("Pwd=")
+                )
 
                 // BSG: Updated for null check on Value not only Password Property.
                 if (dialogConnection.Properties["Password"].Value != null)
-                    generatedConnectionString += ";Password=" + dialogConnection.Properties["Password"].Value.ToString();
+                    generatedConnectionString += ";Password=" + dialogConnection.Properties["Password"].Value;
 
             return generatedConnectionString;
         }
 
         /// <summary>
-        /// 
         /// </summary>
         /// <param name="Name"></param>
         /// <returns></returns>
         internal static string GetSql(string Name)
         {
             // Gets the current assembly.
-            System.Reflection.Assembly Asm = System.Reflection.Assembly.GetExecutingAssembly();
+            var Asm = Assembly.GetExecutingAssembly();
             // Resources are named using a fully qualified name.
-            Stream strm = Asm.GetManifestResourceStream(Asm.GetName().Name + "." + Name);
+            var strm = Asm.GetManifestResourceStream(Asm.GetName().Name + "." + Name);
             // Reads the contents of the embedded file.
-            StreamReader reader = new StreamReader(strm);
+            var reader = new StreamReader(strm);
             return reader.ReadToEnd();
         }
 
         /// <summary>
-        /// Prompt the user to build a connection string and then set the connection
+        ///     Prompt the user to build a connection string and then set the connection
         /// </summary>
         private void SetConnectionString()
         {
             // Build the connection string
-            string newConnectionString = PromptForConnectionString(this.txtConnectionString.Text);
-            this.Refresh(); //Need to repaint form after dialog goes away.
+            var newConnectionString = PromptForConnectionString(txtConnectionString.Text);
+            Refresh(); //Need to repaint form after dialog goes away.
 
             //TODO: Review this code
             // We may need to check the new and old value of the connection string but I'm commenting it out now because it is causing issues and no one is here to stop me
@@ -720,7 +945,7 @@ namespace DataDictionaryCreator
 
         private void btnSetKeyDescriptions_Click(object sender, EventArgs e)
         {
-            bool overwrite = chkOverwriteDescriptions.Checked;
+            var overwrite = chkOverwriteDescriptions.Checked;
             BeginAction(Resources.AdvanceSettingsKeyDescriptionsBeginAction, db.Tables.Count);
 
             foreach (Table table in db.Tables)
@@ -744,177 +969,8 @@ namespace DataDictionaryCreator
                     }
                 }
             }
+
             EndAction(Resources.AdvancedSettingsKeyDescriptonsEndAction);
-        }
-
-        #endregion
-
-        #region - Export Tab Events --
-
-        private void btnExport_Click(object sender, EventArgs e)
-        {
-            saveFileDialogExport.FileName = db.Name;
-            saveFileDialogExport.Filter = "Excel (*.xls)|*.xls" +
-                                        "|Excel Grouped (*.xls)|*.xls" +
-                                        "|HTML (*.htm)|*.htm" +
-                                        "|HTML Grouped (.htm)|.htm" +
-                                        "|Word (*.doc)|*.doc" +
-                                        "|Word Grouped (*.doc)|*.doc" +
-                                        "|XML (*.xml)|*.xml" +
-                                        "|T-SQL (*.sql)|*.sql";
-            saveFileDialogExport.ShowDialog();
-            if (!string.IsNullOrEmpty(saveFileDialogExport.FileName))
-            {
-                try
-                {
-                    FileInfo fileInfo = new FileInfo(saveFileDialogExport.FileName);
-                    //Allow a little extra space on the progress bar for the XSL transform
-                    BeginAction("Exporting to " + fileInfo.Name, (int)(db.Tables.Count * 1.1));
-                    this.Refresh();
-                    Exporter exporter;
-
-                    switch (fileInfo.Extension)
-                    {
-                        case ".sql":
-                            exporter = Exporter.SqlScriptExporter(server.Information);
-                            break;
-                        case ".doc":
-                            if (saveFileDialogExport.FilterIndex == 6)
-                            {
-                                exporter = Exporter.WordExporter(true);
-                            }
-                            else
-                            {
-                                exporter = Exporter.WordExporter(false);
-                            }
-                            break;
-                        case ".xls":
-                            if (saveFileDialogExport.FilterIndex == 2)
-                            {
-                                exporter = Exporter.ExcelExporter(true);
-                            }
-                            else
-                            {
-                                exporter = Exporter.ExcelExporter(false);
-                            }
-                            break;
-                        case ".htm":
-                        case ".html":
-                            if (saveFileDialogExport.FilterIndex == 4)
-                            {
-                                exporter = Exporter.HtmlExporter(true);
-                            }
-                            else
-                            {
-                                exporter = Exporter.HtmlExporter(false);
-                            }
-                            break;
-                        case ".xml":
-                            exporter = Exporter.XmlExporter();
-                            break;
-                        case "":
-                            return;
-                        default:
-                            //Could move this check before exporting to XML.
-                            MessageBox.Show(
-                                "Export isn't supported for this filetype: " + fileInfo.Extension,
-                                "Unsupported File Type",
-                                MessageBoxButtons.OK,
-                                MessageBoxIcon.Information);
-                            return;
-                    }
-
-                    exporter.Progressed += new EventHandler(ProgressUpdate);
-                    exporter.Export(db, additionalPropertiesArray, fileInfo);
-
-                    try
-                    {
-                        if (chkOpenFile.Checked)
-                            System.Diagnostics.Process.Start(fileInfo.FullName);
-                    }
-                    catch (Exception)
-                    {
-                        MessageBox.Show(Resources.ExportErrorGeneric);
-                    }
-                }
-                finally
-                {
-                    EndAction(Resources.ExportEndAction);
-                }
-            }
-        }
-
-        #endregion
-
-        #region - Import Tab Events -
-
-        private void btnImport_Click(object sender, EventArgs e)
-        {
-            openFileDialogImport.ShowDialog();
-            if (!string.IsNullOrEmpty(openFileDialogImport.FileName))
-            {
-                try
-                {
-                    FileInfo fileInfo = new FileInfo(openFileDialogImport.FileName);
-                    //Allow a little extra space on the progress bar for the XSL transform
-                    BeginAction("Importing from " + fileInfo.Name, (int)(db.Tables.Count * 1.1));
-                    this.Refresh();
-
-                    switch (fileInfo.Extension)
-                    {
-                        case ".sql":
-                            //Check script contains correct DDC tag
-                            string script = fileInfo.OpenText().ReadToEnd();
-                            if (script.IndexOf(Exporter.Identifier, StringComparison.InvariantCultureIgnoreCase) == -1)
-                                throw new System.Exception(Resources.ImportErrorCanNotValidateScript);
-
-                            //Execute SQL script - this command knows how to deal with GO separators
-                            server.ConnectionContext.ExecuteNonQuery(script);
-                            break;
-                        case ".xml":
-                            //Check doctype and tags to ensure DDC type
-                            XmlDocument xmlDoc = new XmlDocument();
-                            xmlDoc.Load(fileInfo.FullName);
-                            if (!xmlDoc.DocumentType.Name.Equals(XmlExporter.Identifier, StringComparison.InvariantCultureIgnoreCase))
-                                throw new System.Exception(Resources.ImportErrorUnsupportedVersion);
-
-                            //Iterate and import
-                            foreach (XmlNode tableNode in xmlDoc.SelectNodes("//documentation/tables/table"))
-                            {
-                                string tbl = "[" + tableNode.Attributes["schema"].Value + "].[" + tableNode.Attributes["name"].Value + "]";
-                                Table currentTable = SmoUtil.GetTableByName(db, tbl);
-                                SetTableDescription(currentTable, tableNode.Attributes["description"].Value);
-                                foreach (XmlNode columnNode in tableNode.SelectNodes("column"))
-                                {
-                                    SetPropertyValue(currentTable, SmoUtil.DESCRIPTION_PROPERTY, columnNode.Attributes["description"].Value, columnNode.Attributes["name"].Value, true);
-                                    foreach (XmlNode columnPropertyNode in columnNode.SelectNodes("property"))
-                                    {
-                                        SetPropertyValue(currentTable, columnPropertyNode.Attributes["name"].Value, columnPropertyNode.Attributes["value"].Value, columnNode.Attributes["name"].Value, true);
-                                    }
-                                }
-                            }
-                            break;
-                    }
-                    DocumentationSetup(sqlConnectionString);
-                    EndAction(Resources.ImportEndAction);
-                }
-                catch (Exception ex)
-                {
-                    EndAction("ERROR: " + ex.Message);
-                }
-                finally
-                {
-                }
-            }
-        }
-
-        #endregion
-
-        #region - Status Bar Events -
-
-        private void lnkException_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
-        {
-            MessageBox.Show(connectionExceptionDetails);
         }
 
         #endregion
@@ -923,12 +979,12 @@ namespace DataDictionaryCreator
 
         private void exitToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            this.Dispose();
+            Dispose();
         }
 
         private void aboutToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            About frmAbout = new About();
+            var frmAbout = new About();
             frmAbout.Show();
         }
 
@@ -981,7 +1037,7 @@ namespace DataDictionaryCreator
 
         private void btnExit_Click(object sender, EventArgs e)
         {
-            this.Dispose();
+            Dispose();
         }
 
         #endregion
@@ -990,20 +1046,20 @@ namespace DataDictionaryCreator
 
         private void btnNext_Click(object sender, EventArgs e)
         {
-            int curIndex = tabContainerMain.SelectedIndex;
+            var curIndex = tabContainerMain.SelectedIndex;
             tabContainerMain.SelectTab(curIndex + 1);
         }
 
         private void btnBack_Click(object sender, EventArgs e)
         {
-            int curIndex = tabContainerMain.SelectedIndex;
+            var curIndex = tabContainerMain.SelectedIndex;
             tabContainerMain.SelectTab(curIndex - 1);
         }
 
         private void tabContainerMain_SelectedIndexChanged(object sender, EventArgs e)
         {
             btnBack.Visible = !(tabContainerMain.SelectedIndex == 0);
-            btnNext.Visible = !(tabContainerMain.SelectedIndex == (tabContainerMain.TabCount - 1));
+            btnNext.Visible = !(tabContainerMain.SelectedIndex == tabContainerMain.TabCount - 1);
         }
 
         #endregion
@@ -1046,83 +1102,34 @@ namespace DataDictionaryCreator
 
         private void dgvColumns_CellValueChanged(object sender, DataGridViewCellEventArgs e)
         {
-            string tableColumnName = dgvColumns["Column", e.RowIndex].Value.ToString();
-            string gridPropertyName = dgvColumns.Columns[e.ColumnIndex].Name;
-            string databasePropertyName = (gridPropertyName == "Description") ? SmoUtil.DESCRIPTION_PROPERTY : gridPropertyName;
-            string value = dgvColumns[e.ColumnIndex, e.RowIndex].Value.ToString();
-            SetPropertyValue(this.table, databasePropertyName, value, tableColumnName, true);
+            var tableColumnName = dgvColumns["Column", e.RowIndex].Value.ToString();
+            var gridPropertyName = dgvColumns.Columns[e.ColumnIndex].Name;
+            var databasePropertyName = gridPropertyName == "Description" ? SmoUtil.DESCRIPTION_PROPERTY : gridPropertyName;
+            var value = dgvColumns[e.ColumnIndex, e.RowIndex].Value.ToString();
+            SetPropertyValue(table, databasePropertyName, value, tableColumnName, true);
         }
 
         private void chkExcludedTable_Click(object sender, EventArgs e)
         {
-            ExcludedObject eo = new ExcludedObject(this.table);
-            bool exists = Properties.Settings.Default.ExcludedObjects.Exists(obj => obj == eo);
+            var eo = new ExcludedObject(table);
+            var exists = Settings.Default.ExcludedObjects.Exists(obj => obj == eo);
 
             if (chkExcludedTable.Checked)
             {
                 if (!exists)
                 {
-                    Properties.Settings.Default.ExcludedObjects.Add(eo);
-                    Properties.Settings.Default.Save();
+                    Settings.Default.ExcludedObjects.Add(eo);
+                    Settings.Default.Save();
                 }
             }
             else
             {
                 if (exists)
                 {
-                    Properties.Settings.Default.ExcludedObjects.Remove(eo);
-                    Properties.Settings.Default.Save();
+                    Settings.Default.ExcludedObjects.Remove(eo);
+                    Settings.Default.Save();
                 }
             }
-        }
-
-        #endregion
-
-        #region - Views Documentation -
-
-        private void SetupViewDocumentation()
-        {
-            ddlViews.Items.Clear();
-            //dgvColumns.DataSource = null;
-
-            // Display all non-sysobject tables to be documented
-            foreach (Microsoft.SqlServer.Management.Smo.View view in db.Views)
-            {
-                if (!view.IsSystemObject)
-                {
-                    ddlViews.Items.Add(view.ToString());
-                }
-            }
-
-            // Ultimately, display the selected table fields in the grid
-            if (ddlViews.Items.Count > 0)
-            {
-                if (ddlViews.SelectedIndex == 0)
-                {
-                    ;//FillSelectedTableToDocument();
-                }
-                else
-                {
-                    ddlViews.SelectedIndex = 0;
-                }
-            }
-        }
-
-        #endregion
-
-        #region Updater
-
-        private bool UpdateAvailable()
-        {
-            if (ApplicationDeployment.IsNetworkDeployed)
-            {
-                ApplicationDeployment updateCheck = ApplicationDeployment.CurrentDeployment;
-                UpdateCheckInfo info = updateCheck.CheckForDetailedUpdate();
-
-                return info.UpdateAvailable;
-            }
-
-            return false;
         }
 
         #endregion
@@ -1151,7 +1158,7 @@ namespace DataDictionaryCreator
                 return;
             }
 
-            ApplicationDeployment updateCheck = ApplicationDeployment.CurrentDeployment;
+            var updateCheck = ApplicationDeployment.CurrentDeployment;
 
             try
             {
@@ -1195,39 +1202,38 @@ namespace DataDictionaryCreator
             switch ((UpdateStatuses)e.Result)
             {
                 case UpdateStatuses.UpdateAvailable:
-                    updateAvailableToolStripMenuItem.Visible = true;                    
+                    updateAvailableToolStripMenuItem.Visible = true;
                     break;
                 case UpdateStatuses.UpdateRequired:
                     updateAvailableToolStripMenuItem.Visible = true;
                     MessageBox.Show(Resources.RequiredUpdateAvailable, Resources.UpdateAvailable, MessageBoxButtons.OK);
                     UpdateApplication();
-                    break;                
+                    break;
             }
         }
 
         private void updateAvailableToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            DialogResult dialogResult = MessageBox.Show(Resources.UpdateApplicationNow, Resources.UpdateAvailable, MessageBoxButtons.OKCancel);
+            var dialogResult = MessageBox.Show(Resources.UpdateApplicationNow, Resources.UpdateAvailable, MessageBoxButtons.OKCancel);
             if (dialogResult == DialogResult.OK)
             {
-                UpdateApplication(); 
-            }            
+                UpdateApplication();
+            }
         }
 
         private void UpdateApplication()
         {
             try
             {
-                ApplicationDeployment updateCheck = ApplicationDeployment.CurrentDeployment;
+                var updateCheck = ApplicationDeployment.CurrentDeployment;
                 updateCheck.Update();
                 MessageBox.Show(Resources.ApplicationUpdated);
                 Application.Restart();
             }
             catch (DeploymentDownloadException dde)
             {
-                MessageBox.Show(string.Format(Resources.DeploymentDownloadExceptionMessage,  dde));
-                return;
-            }   
+                MessageBox.Show(string.Format(Resources.DeploymentDownloadExceptionMessage, dde));
+            }
         }
 
         #endregion
